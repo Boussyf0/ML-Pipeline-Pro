@@ -1,0 +1,405 @@
+name: MLOps CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run weekly model retraining
+    - cron: '0 2 * * 0'
+
+env:
+  PYTHON_VERSION: '3.9'
+  MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+  REDIS_URL: ${{ secrets.REDIS_URL }}
+
+jobs:
+  # Code Quality and Testing
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+          
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov pytest-mock black flake8 mypy
+        
+    - name: Lint with flake8
+      run: |
+        flake8 src/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 src/ --count --exit-zero --max-complexity=10 --max-line-length=100 --statistics
+        
+    - name: Format check with black
+      run: |
+        black --check src/
+        
+    - name: Type check with mypy
+      run: |
+        mypy src/ --ignore-missing-imports
+        
+    - name: Run tests
+      env:
+        DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_db
+        REDIS_URL: redis://localhost:6379
+      run: |
+        pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
+        
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+
+  # Security Scanning
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: Install security tools
+      run: |
+        pip install safety bandit semgrep
+        
+    - name: Check for known vulnerabilities
+      run: |
+        safety check -r requirements.txt
+        
+    - name: Run bandit security scan
+      run: |
+        bandit -r src/ -f json -o bandit-report.json
+        
+    - name: Run semgrep security scan
+      run: |
+        semgrep --config=auto src/
+
+  # Data Validation
+  data-validation:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || contains(github.event.head_commit.message, '[retrain]')
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        
+    - name: Validate data quality
+      run: |
+        python scripts/validate_data.py --data-path data/raw/customer_data.csv
+        
+    - name: Check for data drift
+      run: |
+        python scripts/check_data_drift.py --reference data/reference/ --current data/raw/
+
+  # Model Training and Validation
+  train-model:
+    runs-on: ubuntu-latest
+    needs: [test, data-validation]
+    if: github.event_name == 'schedule' || contains(github.event.head_commit.message, '[retrain]')
+    
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mlflow_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+          
+      mlflow:
+        image: mlflow/mlflow:latest
+        env:
+          BACKEND_STORE_URI: postgresql://postgres:postgres@postgres:5432/mlflow_db
+        ports:
+          - 5000:5000
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        
+    - name: Wait for MLflow
+      run: |
+        for i in {1..30}; do
+          if curl -f http://localhost:5000/health; then
+            break
+          fi
+          echo "Waiting for MLflow..."
+          sleep 10
+        done
+        
+    - name: Train models
+      env:
+        MLFLOW_TRACKING_URI: http://localhost:5000
+      run: |
+        python src/models/train.py \
+          --data-path data/raw/customer_data.csv \
+          --config-path config/config.yaml \
+          --register-best
+          
+    - name: Validate model performance
+      run: |
+        python scripts/validate_model.py --min-accuracy 0.75
+        
+    - name: Upload model artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: trained-models
+        path: models/artifacts/
+
+  # Build Docker Images
+  build:
+    runs-on: ubuntu-latest
+    needs: [test, security]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+        
+    - name: Build and push API image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: docker/api.Dockerfile
+        push: true
+        tags: |
+          ${{ secrets.DOCKERHUB_USERNAME }}/mlops-api:latest
+          ${{ secrets.DOCKERHUB_USERNAME }}/mlops-api:${{ github.sha }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        
+    - name: Build and push MLflow image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: docker/mlflow.Dockerfile
+        push: true
+        tags: |
+          ${{ secrets.DOCKERHUB_USERNAME }}/mlops-mlflow:latest
+          ${{ secrets.DOCKERHUB_USERNAME }}/mlops-mlflow:${{ github.sha }}
+
+  # Deploy to Staging
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: [build, train-model]
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+        
+    - name: Configure kubectl
+      run: |
+        echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > kubeconfig
+        export KUBECONFIG=kubeconfig
+        
+    - name: Deploy to staging
+      run: |
+        kubectl apply -f k8s/staging/
+        kubectl set image deployment/mlops-api mlops-api=${{ secrets.DOCKERHUB_USERNAME }}/mlops-api:${{ github.sha }} -n staging
+        kubectl rollout status deployment/mlops-api -n staging
+        
+    - name: Run smoke tests
+      run: |
+        python tests/smoke_tests.py --environment staging
+        
+    - name: Deploy model to staging
+      run: |
+        python scripts/deploy_model.py \
+          --environment staging \
+          --model-name churn-predictor \
+          --promote-from-registry
+
+  # Integration Tests on Staging
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    if: github.ref == 'refs/heads/develop'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: Install test dependencies
+      run: |
+        pip install pytest requests
+        
+    - name: Run integration tests
+      env:
+        STAGING_API_URL: ${{ secrets.STAGING_API_URL }}
+      run: |
+        pytest tests/integration/ -v --environment=staging
+        
+    - name: Load test
+      run: |
+        python tests/load_test.py --url ${{ secrets.STAGING_API_URL }} --duration 300
+
+  # Deploy to Production
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: [integration-tests]
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+        
+    - name: Configure kubectl
+      run: |
+        echo "${{ secrets.KUBE_CONFIG_PROD }}" | base64 -d > kubeconfig
+        export KUBECONFIG=kubeconfig
+        
+    - name: Blue-Green Deployment
+      run: |
+        python scripts/blue_green_deploy.py \
+          --image ${{ secrets.DOCKERHUB_USERNAME }}/mlops-api:${{ github.sha }} \
+          --namespace production
+          
+    - name: Deploy model with A/B testing
+      run: |
+        python scripts/deploy_model_ab.py \
+          --model-name churn-predictor \
+          --environment production \
+          --traffic-split 0.1
+          
+    - name: Monitor deployment
+      run: |
+        python scripts/monitor_deployment.py \
+          --deployment mlops-api \
+          --namespace production \
+          --timeout 600
+
+  # Post-deployment Monitoring
+  post-deploy-monitoring:
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up monitoring
+      run: |
+        python scripts/setup_monitoring.py --environment production
+        
+    - name: Create alerts
+      run: |
+        python scripts/create_alerts.py \
+          --model-name churn-predictor \
+          --environment production
+          
+    - name: Send deployment notification
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#mlops-alerts'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        message: |
+          🚀 Production deployment completed!
+          Model: churn-predictor
+          Version: ${{ github.sha }}
+          Environment: production
+
+  # Cleanup
+  cleanup:
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: always()
+    
+    steps:
+    - name: Clean up old artifacts
+      run: |
+        # Clean up old Docker images
+        docker system prune -f
+        
+    - name: Archive old model versions
+      run: |
+        python scripts/archive_models.py --keep-latest 5

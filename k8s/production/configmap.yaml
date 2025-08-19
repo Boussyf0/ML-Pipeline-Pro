@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mlops-config
+  namespace: production
+data:
+  mlflow-uri: "http://mlflow-service:5000"
+  environment: "production"
+  log-level: "INFO"
+  config.yaml: |
+    project:
+      name: "customer-churn-prediction"
+      version: "1.0.0"
+      description: "Production MLOps pipeline for customer churn prediction"
+
+    api:
+      host: "0.0.0.0"
+      port: 8000
+      title: "Customer Churn Prediction API"
+      description: "Production API for predicting customer churn"
+      version: "1.0.0"
+      
+      rate_limit:
+        requests_per_minute: 1000
+        requests_per_hour: 10000
+        
+      logging:
+        level: "INFO"
+        format: "json"
+
+    monitoring:
+      drift_detection:
+        enabled: true
+        reference_window_days: 30
+        detection_window_days: 7
+        
+      performance_monitoring:
+        enabled: true
+        metrics:
+          - "accuracy"
+          - "precision"
+          - "recall"
+          - "f1_score"
+          - "auc_roc"
+          - "latency"
+          - "throughput"
+        alert_thresholds:
+          accuracy_drop: 0.05
+          precision_drop: 0.05
+          recall_drop: 0.05
+          latency_p95_ms: 1000
+          
+      alerts:
+        email_notifications: true
+        slack_notifications: true
+
+    ab_testing:
+      enabled: true
+      traffic_allocation:
+        model_a: 0.5
+        model_b: 0.5
+      minimum_sample_size: 1000
+      significance_level: 0.05
+
+    logging:
+      level: "INFO"
+      format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

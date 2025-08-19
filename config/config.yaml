@@ -1,0 +1,153 @@
+ab_testing:
+  enabled: true
+  minimum_sample_size: 1000
+  significance_level: 0.05
+  traffic_allocation:
+    model_a: 0.5
+    model_b: 0.5
+airflow:
+  email_on_failure: true
+  email_on_retry: false
+  monitoring_schedule: 0 * * * *
+  retries: 3
+  retry_delay_minutes: 5
+  training_schedule: 0 2 * * 0
+api:
+  description: Production API for predicting customer churn
+  host: 0.0.0.0
+  logging:
+    format: json
+    level: INFO
+  port: 8000
+  rate_limit:
+    requests_per_hour: 1000
+    requests_per_minute: 100
+  title: Customer Churn Prediction API
+  version: 1.0.0
+database:
+  connection_string: postgresql://mlops_user:mlops_password@localhost:5432/mlops_db
+  host: localhost
+  name: mlops_db
+  password: mlops_password
+  port: 5432
+  user: mlops_user
+logging:
+  backup_count: 5
+  file_path: logs/mlops.log
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  level: INFO
+  max_file_size_mb: 10
+mlflow:
+  artifact_location: /mlflow/artifacts
+  experiment_name: customer-churn-prediction
+  registered_model_name: churn-predictor
+  tracking_uri: http://localhost:5001
+monitoring:
+  alerts:
+    email_notifications: true
+    slack_notifications: false
+    webhook_url: ''
+  drift_detection:
+    detection_window_days: 7
+    enabled: true
+    reference_window_days: 30
+    statistical_tests:
+    - ks
+    - psi
+    - wasserstein
+    thresholds:
+      ks: 0.1
+      psi: 0.25
+      wasserstein: 0.1
+  performance_monitoring:
+    alert_thresholds:
+      accuracy_drop: 0.05
+      precision_drop: 0.05
+      recall_drop: 0.05
+    enabled: true
+    metrics:
+    - accuracy
+    - precision
+    - recall
+    - f1_score
+    - auc_roc
+project:
+  description: Enterprise MLOps pipeline for customer churn prediction
+  name: customer-churn-prediction
+  version: 1.0.0
+redis:
+  connection_string: redis://localhost:6379/0
+  db: 0
+  host: localhost
+  port: 6379
+training:
+  data:
+    random_state: 42
+    target_column: churn
+    test_ratio: 0.15
+    train_ratio: 0.7
+    validation_ratio: 0.15
+  features:
+    categorical_features:
+    - gender
+    - senior_citizen
+    - partner
+    - dependents
+    - phone_service
+    - multiple_lines
+    - internet_service
+    - internet_type
+    - online_security
+    - online_backup
+    - device_protection
+    - tech_support
+    - streaming_tv
+    - streaming_movies
+    - contract
+    - paperless_billing
+    - payment_method
+    encoding_method: onehot
+    id_column: customer_id
+    numerical_features:
+    - age
+    - tenure
+    - monthly_charges
+    - total_charges
+    scaling_method: standard
+    target_column: churn
+  hyperparameter_tuning:
+    enabled: true
+    method: optuna
+    n_trials: 50
+    timeout: 3600
+  models:
+    lightgbm:
+      colsample_bytree: 0.8
+      learning_rate: 0.1
+      max_depth: 6
+      n_estimators: 100
+      random_state: 42
+      subsample: 0.8
+    random_forest:
+      max_depth: 10
+      min_samples_leaf: 2
+      min_samples_split: 5
+      n_estimators: 100
+      random_state: 42
+    xgboost:
+      colsample_bytree: 0.8
+      learning_rate: 0.1
+      max_depth: 6
+      n_estimators: 100
+      random_state: 42
+      subsample: 0.8
+  thresholds:
+    min_accuracy: 0.75
+    min_auc_roc: 0.75
+    min_f1_score: 0.7
+    min_precision: 0.7
+    min_recall: 0.65
+  validation:
+    cv_folds: 5
+    scoring: roc_auc
+    test_size: 0.2

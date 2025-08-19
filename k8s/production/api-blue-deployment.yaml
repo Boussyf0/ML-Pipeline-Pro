@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlops-api-blue
+  namespace: production
+  labels:
+    app: mlops-api
+    environment: blue
+    version: blue
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mlops-api
+      environment: blue
+  template:
+    metadata:
+      labels:
+        app: mlops-api
+        environment: blue
+        version: blue
+    spec:
+      containers:
+      - name: mlops-api
+        image: mlops/api:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: mlops-secrets
+              key: database-url
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: mlops-secrets
+              key: redis-url
+        - name: MLFLOW_TRACKING_URI
+          valueFrom:
+            configMapKeyRef:
+              name: mlops-config
+              key: mlflow-uri
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/config
+          readOnly: true
+      volumes:
+      - name: config-volume
+        configMap:
+          name: mlops-config

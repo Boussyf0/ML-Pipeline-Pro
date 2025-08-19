@@ -1,0 +1,157 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database for MLflow and application data
+  postgres:
+    image: postgres:15
+    container_name: mlops-postgres
+    environment:
+      POSTGRES_DB: mlops_db
+      POSTGRES_USER: mlops_user
+      POSTGRES_PASSWORD: mlops_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - mlops-network
+
+  # Redis for Feature Store and Caching
+  redis:
+    image: redis:7.2-alpine
+    container_name: mlops-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - mlops-network
+
+  # MLflow Tracking Server
+  mlflow:
+    build: 
+      context: .
+      dockerfile: docker/mlflow.Dockerfile
+    container_name: mlops-mlflow
+    environment:
+      - BACKEND_STORE_URI=postgresql://mlops_user:mlops_password@postgres:5432/mlops_db
+      - ARTIFACT_ROOT=/mlflow/artifacts
+      - MLFLOW_PORT=5000
+    ports:
+      - "5001:5000"
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    depends_on:
+      - postgres
+    networks:
+      - mlops-network
+
+  # FastAPI Application
+  api:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    container_name: mlops-api
+    environment:
+      - DATABASE_URL=postgresql://mlops_user:mlops_password@postgres:5432/mlops_db
+      - REDIS_URL=redis://redis:6379
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+      - ./models:/app/models
+    depends_on:
+      - postgres
+      - redis
+      - mlflow
+    networks:
+      - mlops-network
+
+  # Airflow Scheduler
+  airflow-scheduler:
+    build:
+      context: ./docker/airflow
+      dockerfile: Dockerfile
+    container_name: mlops-airflow-scheduler
+    command: scheduler
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://mlops_user:mlops_password@postgres:5432/mlops_db
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=true
+      - AIRFLOW__CORE__LOAD_EXAMPLES=false
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./src:/opt/airflow/src
+      - ./data:/opt/airflow/data
+    depends_on:
+      - postgres
+    networks:
+      - mlops-network
+
+  # Airflow Webserver
+  airflow-webserver:
+    build:
+      context: ./docker/airflow
+      dockerfile: Dockerfile
+    container_name: mlops-airflow-webserver
+    command: webserver
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://mlops_user:mlops_password@postgres:5432/mlops_db
+      - AIRFLOW__WEBSERVER__WEB_SERVER_PORT=8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/plugins:/opt/airflow/plugins
+    depends_on:
+      - postgres
+      - airflow-scheduler
+    networks:
+      - mlops-network
+
+  # Prometheus for Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: mlops-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - mlops-network
+
+  # Grafana for Visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: mlops-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - prometheus
+    networks:
+      - mlops-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  mlflow_artifacts:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  mlops-network:
+    driver: bridge
