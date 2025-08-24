@@ -1,0 +1,173 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlops-api
+  namespace: staging
+  labels:
+    app: mlops-api
+    environment: staging
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mlops-api
+      environment: staging
+  template:
+    metadata:
+      labels:
+        app: mlops-api
+        environment: staging
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: mlops-api
+        image: mlops-api:latest
+        ports:
+        - containerPort: 8000
+          name: http
+        env:
+        # Environment variables from ConfigMap
+        - name: ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: mlops-api-config
+              key: ENVIRONMENT
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: mlops-api-config
+              key: LOG_LEVEL
+        - name: MODEL_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: mlops-api-config
+              key: MODEL_NAME
+        - name: MODEL_VERSION
+          valueFrom:
+            configMapKeyRef:
+              name: mlops-api-config
+              key: MODEL_VERSION
+        - name: ENABLE_METRICS
+          valueFrom:
+            configMapKeyRef:
+              name: mlops-api-config
+              key: ENABLE_METRICS
+        - name: ENABLE_HEALTH_CHECKS
+          valueFrom:
+            configMapKeyRef:
+              name: mlops-api-config
+              key: ENABLE_HEALTH_CHECKS
+        - name: API_TITLE
+          valueFrom:
+            configMapKeyRef:
+              name: mlops-api-config
+              key: API_TITLE
+        - name: API_VERSION
+          valueFrom:
+            configMapKeyRef:
+              name: mlops-api-config
+              key: API_VERSION
+        - name: CORS_ORIGINS
+          valueFrom:
+            configMapKeyRef:
+              name: mlops-api-config
+              key: CORS_ORIGINS
+        # Secrets
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: mlops-api-secrets
+              key: DATABASE_URL
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: mlops-api-secrets
+              key: REDIS_URL
+        - name: MLFLOW_TRACKING_URI
+          valueFrom:
+            secretKeyRef:
+              name: mlops-api-secrets
+              key: MLFLOW_TRACKING_URI
+        - name: API_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mlops-api-secrets
+              key: API_SECRET_KEY
+        - name: ADMIN_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: mlops-api-secrets
+              key: ADMIN_TOKEN
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: models
+          mountPath: /app/models
+          readOnly: true
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: models
+        persistentVolumeClaim:
+          claimName: models-pvc
+      securityContext:
+        fsGroup: 1000
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: mlops-api
+              topologyKey: kubernetes.io/hostname
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models-pvc
+  namespace: staging
+  labels:
+    app: mlops-api
+    environment: staging
+spec:
+  accessModes:
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: standard
